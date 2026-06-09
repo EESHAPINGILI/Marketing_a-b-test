@@ -1,0 +1,571 @@
+select * from marketing_ab;
+
+select count(*) from marketing_ab;
+
+select count(*) group by 'test group';
+
+-- renaming columns to make them more accessible
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `user id` TO user_id;
+
+
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `test group` TO test_group;
+
+
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `converted` TO converted;
+
+
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `total ads` TO total_ads;
+
+
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `most ads day` TO most_ads_day;
+
+
+
+ALTER TABLE marketing_ab
+
+RENAME COLUMN `most ads hour` TO most_ads_hour;
+
+
+
+/* ==========================================================
+
+   1. DISTRIBUTION OF USERS BY TEST GROUP
+
+   ----------------------------------------------------------
+
+   Understand how users are split between the ad and psa groups.
+
+   ========================================================== */
+
+
+
+SELECT
+
+    test_group,
+
+    COUNT(*) AS user_count,
+
+    ROUND(
+
+        COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (),
+
+        2
+
+    ) AS percent_of_total,
+
+    SUM(COUNT(*)) OVER () AS total_users
+
+FROM marketing_ab
+
+GROUP BY test_group;
+
+
+
+
+
+/* ==========================================================
+
+   2. OVERALL CONVERSION PERFORMANCE
+
+   ----------------------------------------------------------
+
+   Calculate:
+
+   - Total conversions
+
+   - Total users
+
+   - Overall conversion rate
+
+   ========================================================== */
+
+
+
+WITH overall_stats AS (
+
+    SELECT
+
+        SUM(CASE WHEN converted = 'True' THEN 1 ELSE 0 END) AS conversions,
+
+        COUNT(*) AS total_users
+
+    FROM marketing_ab
+
+)
+
+SELECT
+
+    conversions,
+
+    total_users,
+
+    ROUND(conversions * 100.0 / total_users, 2) AS conversion_rate_pct
+
+FROM overall_stats;
+
+
+
+
+
+/* ==========================================================
+
+   3. CONVERSION PERFORMANCE BY TEST GROUP
+
+   ----------------------------------------------------------
+
+   Compare conversion rates for:
+
+   - ad group
+
+   - psa group
+
+   ========================================================== */
+
+
+
+WITH group_stats AS (
+
+    SELECT
+
+        test_group,
+
+        SUM(CASE WHEN converted = 'True' THEN 1 ELSE 0 END) AS conversions,
+
+        COUNT(*) AS total_users
+
+    FROM marketing_ab
+
+    GROUP BY test_group
+
+)
+
+SELECT
+
+    test_group,
+
+    conversions,
+
+    total_users,
+
+    ROUND(conversions * 100.0 / total_users, 2) AS conversion_rate_pct
+
+FROM group_stats;
+
+
+
+
+
+/*
+
+Expected Findings:
+
+
+
+Overall conversion rate ≈ 2.52%
+
+Ad conversion rate ≈ 2.55%
+
+PSA conversion rate ≈ 1.79%
+
+
+
+The ad campaign appears to outperform the PSA campaign.
+
+*/
+
+
+
+
+
+/* ==========================================================
+
+   4. MEASURES OF CENTRAL TENDENCY FOR TOTAL ADS
+
+   ----------------------------------------------------------
+
+   Understand the distribution of total_ads exposure.
+
+   ========================================================== */
+
+
+
+SELECT
+
+    test_group,
+
+    ROUND(AVG(total_ads), 2) AS mean_ads_seen,
+
+    MAX(total_ads) AS max_ads_seen,
+
+    MIN(total_ads) AS min_ads_seen
+
+FROM marketing_ab
+
+GROUP BY test_group;
+
+
+
+
+
+/* ==========================================================
+
+   5. MEDIAN NUMBER OF ADS SEEN
+
+   ----------------------------------------------------------
+
+   Median is often more reliable than the mean when data
+
+   contains extreme outliers.
+
+   ========================================================== */
+
+
+
+WITH ranked AS (
+
+    SELECT
+
+        total_ads,
+
+        ROW_NUMBER() OVER (ORDER BY total_ads) AS rn,
+
+        COUNT(*) OVER () AS total_rows
+
+    FROM marketing_ab
+
+)
+
+SELECT
+
+    CAST(AVG(total_ads) AS SIGNED) AS median_ads_seen
+
+FROM ranked
+
+WHERE rn IN (
+
+    FLOOR((total_rows + 1) / 2),
+
+    FLOOR((total_rows + 2) / 2)
+
+);
+
+
+
+
+
+/* ==========================================================
+
+   6. ABSOLUTE & RELATIVE LIFT (AD vs PSA)
+
+   ----------------------------------------------------------
+
+   Measures the improvement of the ad campaign over PSA.
+
+   ========================================================== */
+
+
+
+WITH rates AS (
+
+    SELECT
+
+        test_group,
+
+        SUM(CASE WHEN converted = 'True' THEN 1 ELSE 0 END) * 1.0
+
+        / COUNT(*) AS conversion_rate
+
+    FROM marketing_ab
+
+    GROUP BY test_group
+
+)
+
+SELECT
+
+    ad.conversion_rate AS ad_rate,
+
+    psa.conversion_rate AS psa_rate,
+
+
+
+    ROUND(
+
+        ad.conversion_rate - psa.conversion_rate,
+
+        4
+
+    ) AS absolute_lift,
+
+
+
+    ROUND(
+
+        (
+
+            (ad.conversion_rate - psa.conversion_rate)
+
+            / NULLIF(psa.conversion_rate, 0)
+
+        ) * 100,
+
+        2
+
+    ) AS relative_lift_pct
+
+
+
+FROM rates ad
+
+CROSS JOIN rates psa
+
+WHERE ad.test_group = 'ad'
+
+  AND psa.test_group = 'psa';
+
+
+
+
+
+/*
+
+Interpretation:
+
+
+
+Absolute Lift
+
+= Ad Conversion Rate - PSA Conversion Rate
+
+
+
+Relative Lift (%)
+
+= ((Ad Rate - PSA Rate) / PSA Rate) × 100
+
+
+
+Example:
+
+
+
+Ad Rate  = 2.55%
+
+PSA Rate = 1.79%
+
+
+
+Absolute Lift = 0.76 percentage points
+
+
+
+Relative Lift
+
+= (2.55 - 1.79) / 1.79 × 100
+
+≈ 42.46%
+
+
+
+Meaning:
+
+The ad campaign generated approximately 42% more conversions
+
+than the PSA campaign relative to the PSA baseline.
+
+*/ 
+
+/* ==========================================================
+
+   7. CONVERSION RATE BY AD EXPOSURE
+
+   ----------------------------------------------------------
+
+   Determine whether higher ad exposure increases the
+
+   probability of conversion.
+
+   ========================================================== */
+
+
+
+SELECT 
+
+    CASE
+
+        WHEN total_ads BETWEEN 1 AND 10 THEN '1-10 Ads'
+
+        WHEN total_ads BETWEEN 11 AND 50 THEN '11-50 Ads'
+
+        WHEN total_ads BETWEEN 51 AND 100 THEN '51-100 Ads'
+
+        ELSE '100+ Ads'
+
+    END AS ads_bucket,
+
+    COUNT(*) AS users,
+
+    SUM(CASE
+
+        WHEN converted = 'True' THEN 1
+
+        ELSE 0
+
+    END) AS conversions,
+
+    ROUND(SUM(CASE
+
+                WHEN converted = 'True' THEN 1
+
+                ELSE 0
+
+            END) * 100.0 / COUNT(*),
+
+            2) AS conversion_rate_pct
+
+FROM
+
+    marketing_ab
+
+WHERE
+
+    test_group = 'ad'
+
+GROUP BY ads_bucket
+
+ORDER BY conversion_rate_pct DESC;
+
+/* ==========================================================
+
+   8. BEST DAY OF WEEK FOR AD PERFORMANCE
+
+   ========================================================== */
+
+
+
+SELECT
+
+    most_ads_day,
+
+
+
+    COUNT(*) AS users,
+
+
+
+    SUM(
+
+        CASE
+
+            WHEN converted = 'True' THEN 1
+
+            ELSE 0
+
+        END
+
+    ) AS conversions,
+
+
+
+    ROUND(
+
+        SUM(
+
+            CASE
+
+                WHEN converted = 'True' THEN 1
+
+                ELSE 0
+
+            END
+
+        ) * 100.0 / COUNT(*),
+
+        2
+
+    ) AS conversion_rate_pct
+
+
+
+FROM marketing_ab
+
+WHERE test_group = 'ad'
+
+GROUP BY most_ads_day
+
+ORDER BY conversion_rate_pct DESC;
+
+/* ==========================================================
+
+   9. BEST HOUR OF DAY FOR AD PERFORMANCE
+
+   ========================================================== */
+
+
+
+SELECT
+
+    most_ads_hour,
+
+
+
+    COUNT(*) AS users,
+
+
+
+    SUM(
+
+        CASE
+
+            WHEN converted = 'True' THEN 1
+
+            ELSE 0
+
+        END
+
+    ) AS conversions,
+
+
+
+    ROUND(
+
+        SUM(
+
+            CASE
+
+                WHEN converted = 'True' THEN 1
+
+                ELSE 0
+
+            END
+
+        ) * 100.0 / COUNT(*),
+
+        2
+
+    ) AS conversion_rate_pct
+
+
+
+FROM marketing_ab
+
+WHERE test_group = 'ad' 
+
+GROUP BY most_ads_hour
+
+ORDER BY conversion_rate_pct DESC;
